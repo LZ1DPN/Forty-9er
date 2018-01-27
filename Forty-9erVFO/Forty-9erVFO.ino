@@ -44,7 +44,7 @@ char inTx = 0;     // trx in transmit mode temp var
 char keyDown = 1;   // keyer down temp vat
 
 const int FSYNC = 10;                       // Standard SPI pins for the AD9833 waveform generator.
-const int CLK = 13;                         // CLK and DATA pins are shared with the TFT display.
+const int CLK = 12;                         // CLK and DATA pins are shared with the TFT display.
 const int DATA = 11;
 const float refFreq = 25000000.0;           // On-board crystal reference frequency
 

@@ -21,7 +21,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 // Include the library code
-#include "Wire.h"
 #include <SPI.h>
 #include <rotary.h>
 #include <Adafruit_SSD1306.h>
@@ -30,9 +29,12 @@ Adafruit_SSD1306 display(OLED_RESET);
 
 //Setup some items
 const int SINE = 0x2000;                    // Define AD9833's waveform register value.
-const int SQUARE = 0x2020;                  // When we update the frequency, we need to
+const int SQUARE = 0x2028;                  // When we update the frequency, we need to
 const int TRIANGLE = 0x2002;                // define the waveform when we end writing.    
-unsigned long FREQ = 1000;
+
+int wave = 0;
+int waveType = SINE;
+int wavePin = 7;
 
 //#define TX_RX (4)          // mute + (+12V) relay - antenna switch relay TX/RX, and +V in TX for PA - RF Amplifier (2 sided 2 possition relay)
 #define FBUTTON (A0)       // tuning step freq CHANGE from 1Hz to 1MHz step for single rotary encoder possition
@@ -42,9 +44,9 @@ char inTx = 0;     // trx in transmit mode temp var
 char keyDown = 1;   // keyer down temp vat
 
 const int FSYNC = 10;                       // Standard SPI pins for the AD9833 waveform generator.
-const int SCLK = 12;                         // CLK and DATA pins are shared with the TFT display.
-const int SDATA = 11;
-const float CRYSTAL = 25000000.0;
+const int CLK = 12;                         // CLK and DATA pins are shared with the TFT display.
+const int DATA = 11;
+const float refFreq = 25000000.0;           // On-board crystal reference frequency
 
 #define pulseHigh(pin) {digitalWrite(pin, HIGH); digitalWrite(pin, LOW); }
 Rotary r = Rotary(3,2); // sets the pins for rotary encoder uses.  Must be interrupt pins.
@@ -77,43 +79,26 @@ void setup() {
 
 //set up the pins in/out and logic levels
 
-  pinMode(FSYNC, OUTPUT);
-  pinMode(SDATA, OUTPUT);
-  pinMode(SCLK, OUTPUT);
-  digitalWrite(FSYNC, HIGH);
-  digitalWrite(SDATA, LOW);
-  digitalWrite(SCLK, HIGH);
-   
-
 pinMode(BTNDEC,INPUT);    // band change button
 digitalWrite(BTNDEC,HIGH);    // level
 
 pinMode(FBUTTON,INPUT); // Connect to a button that goes to GND on push - rotary encoder push button - for FREQ STEP change
 digitalWrite(FBUTTON,HIGH);  //level
 
-Wire.begin();
 // Initialize the Serial port so that we can use it for debugging
 Serial.begin(115200);
-
+  
 // Can't set SPI MODE here because the display and the AD9833 use different MODES.
 SPI.begin();
-delay(999); 
+delay(50); 
 
   Serial.println("*Initialize AD9833\n");
+  AD9833reset();                                   // Reset AD9833 module after power-up.
+  delay(50);
+  AD9833setFrequency(rx, SINE);                  // Set the frequency and Sine Wave output
+  
   Serial.println("Start VFO ver 20.0");
 
-  UpdateDDS(0x2100);                                    
-  UpdateDDS(0x50C7);                                    
-  UpdateDDS(0x4000);                                    
-  UpdateDDS(0xC000);                                    
-  UpdateDDS(0x2000); 
-  // SWITCH TO SOURCE = DDS 
-  // digitalWrite(SOURCE, LOW);
-  // NOW THERE SHOULD BE A 
-  // 384 Hz SIGNAL AT THE OUTPUT                               
-  delay(999);
-  
-  
   // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C address 0x3C (for oled 128x32)
   
@@ -121,7 +106,7 @@ delay(999);
   // Since the buffer is intialized with an Adafruit splashscreen
   // internally, this will display the splashscreen.
   // Clear the buffer.
-    display.clearDisplay();	
+  display.clearDisplay();	
 	display.setTextSize(2);
 	display.setTextColor(WHITE);
 	display.setCursor(0,0);
@@ -138,6 +123,8 @@ delay(999);
   PCMSK2 |= (1 << PCINT18) | (1 << PCINT19);
   sei();
   
+    AD9833setFrequency(rx, SINE);     // Set AD9833 to frequency and selected wave type.
+    delay(50);
 }
 
 ///// START LOOP - MAIN LOOP
@@ -148,7 +135,7 @@ void loop() {
 // freq change 
   if ((rx != rx2) || (RITon == 1)){
 	    showFreq();
-  	  UpdateFreq(rx, SQUARE);
+      AD9833setFrequency(rx, SINE);     // Set AD9833 to frequency and selected wave type.
       rx2 = rx;
       }
 
@@ -166,17 +153,17 @@ if (Serial.available()) {
     byteRead = Serial.read();
 	if(byteRead == 49){     // 1 - up freq
 		rx = rx + increment;
-		UpdateFreq(rx, SQUARE);
-        Serial.println(rx);
+		AD9833setFrequency(rx, SINE);
+    Serial.println(rx);
 		}
 	if(byteRead == 50){		// 2 - down freq
 		rx = rx - increment;
-		UpdateFreq(rx, SQUARE);
-		Serial.println(rx);
+		AD9833setFrequency(rx, SINE);
+    Serial.println(rx);
 		}
 	if(byteRead == 51){		// 3 - up increment
 		setincrement();
-		Serial.println(increment);
+    Serial.println(increment);
 		}
 	if(byteRead == 52){		// 4 - print VFO state in serial console
 		Serial.println("VFO_VERSION 14.0");
@@ -190,7 +177,7 @@ if (Serial.available()) {
              while(var_i<=40000){
                 var_i++;
                 rx = rx + 10;
-				UpdateFreq(rx, SQUARE);
+                AD9833setFrequency(rx, SINE);
                 Serial.println(rx);
 //                showFreq();
                 if (Serial.available()) {
@@ -206,7 +193,7 @@ if (Serial.available()) {
              while(var_i<=40000){
                 var_i++;
                 rx = rx - 10;
-				UpdateFreq(rx, SQUARE);
+                AD9833setFrequency(rx, SINE);
                 Serial.println(rx);
 //                showFreq();
                 if (Serial.available()) {
@@ -272,6 +259,47 @@ void showFreq(){
 	display.display();
 }
 
+// AD9833 documentation advises a 'Reset' on first applying power.
+void AD9833reset() {
+  WriteRegister(0x100);   // Write '1' to AD9833 Control register bit D8.
+  delay(10);
+}
+
+// Set the frequency and waveform registers in the AD9833.
+void AD9833setFrequency(long frequency, int Waveform) {
+
+  long FreqWord = (frequency * pow(2, 28)) / refFreq;
+
+  int MSB = (int)((FreqWord & 0xFFFC000) >> 14);    //Only lower 14 bits are used for data
+  int LSB = (int)(FreqWord & 0x3FFF);
+  
+  //Set control bits 15 ande 14 to 0 and 1, respectively, for frequency register 0
+  LSB |= 0x4000;
+  MSB |= 0x4000; 
+  
+  WriteRegister(0x2100);   
+  WriteRegister(LSB);                  // Write lower 16 bits to AD9833 registers
+  WriteRegister(MSB);                  // Write upper 16 bits to AD9833 registers.
+  WriteRegister(0xC000);               // Phase register
+  WriteRegister(Waveform);             // Exit & Reset to SINE, SQUARE or TRIANGLE
+
+}
+
+void WriteRegister(int dat) { 
+  
+  // Display and AD9833 use different SPI MODES so it has to be set for the AD9833 here.
+  SPI.setDataMode(SPI_MODE2);       
+  
+  digitalWrite(FSYNC, LOW);           // Set FSYNC low before writing to AD9833 registers
+  delayMicroseconds(10);              // Give AD9833 time to get ready to receive data.
+  
+  SPI.transfer(highByte(dat));        // Each AD9833 register is 32 bits wide and each 16
+  SPI.transfer(lowByte(dat));         // bits has to be transferred as 2 x 8-bit bytes.
+
+  digitalWrite(FSYNC, HIGH);          //Write done. Set FSYNC high
+}
+
+
 //  BAND CHANGE !!! band plan - change if need 
 void checkBTNdecode(){
   
@@ -325,39 +353,3 @@ BTNdecodeON = digitalRead(BTNDEC);
 }
 
 //// OK END OF PROGRAM
-
-// ///////////////////////////////////////////////////////////// 
-//! Updates the DDS registers
-// ///////////////////////////////////////////////////////////// 
-void UpdateDDS(unsigned int data){
-  unsigned int pointer = 0x8000;
-  // Serial.print(data,HEX);Serial.print(" ");
-  digitalWrite(FSYNC, LOW);     // AND NOW : WAIT 5 ns
-  for (int i=0; i<16; i++){
-   if ((data & pointer) > 0) { digitalWrite(SDATA, HIGH); }
-      else { digitalWrite(SDATA, LOW); }
-    digitalWrite(SCLK, LOW);
-    digitalWrite(SCLK, HIGH);
-    pointer = pointer >> 1 ;
-  }
-  digitalWrite(FSYNC, HIGH);
-}
-
-// ///////////////////////////////////////////////////////////// 
-//! Updates the Freq registers
-// ///////////////////////////////////////////////////////////// 
-void UpdateFreq(long FREQ, int WAVE){
-   
-  long FTW = (FREQ * pow(2, 28)) / CRYSTAL;
-  if (WAVE == SQUARE) FTW = FTW << 1;
-  unsigned int MSB = (int)((FTW & 0xFFFC000) >> 14);    
-  unsigned int LSB = (int)(FTW & 0x3FFF);
-  LSB |= 0x4000;
-  MSB |= 0x4000; 
-  UpdateDDS(0x2100);   
-  UpdateDDS(LSB);                   
-  UpdateDDS(MSB);                   
-  UpdateDDS(0xC000);                
-  UpdateDDS(WAVE);
-   
-}

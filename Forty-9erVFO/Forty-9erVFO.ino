@@ -42,7 +42,7 @@ char inTx = 0;     // trx in transmit mode temp var
 char keyDown = 1;   // keyer down temp vat
 
 const int FSYNC = 10;                       // Standard SPI pins for the AD9833 waveform generator.
-const int SCLK = 12;                         // CLK and DATA pins are shared with the TFT display.
+const int SCLK = 13;                         // CLK and DATA pins are shared with the TFT display.
 const int SDATA = 11;
 const float CRYSTAL = 25000000.0;
 
@@ -100,7 +100,7 @@ SPI.begin();
 delay(999); 
 
   Serial.println("*Initialize AD9833\n");
-  Serial.println("Start VFO ver 20.0");
+  Serial.println("Start VFO ver 12.0");
 
   UpdateDDS(0x2100);                                    
   UpdateDDS(0x50C7);                                    

@@ -33,18 +33,21 @@ const int SQUARE = 0x2028;                  // When we update the frequency, we 
 const int TRIANGLE = 0x2002;                // define the waveform when we end writing.    
 
 int wave = 0;
-int waveType = SINE;
+int waveType = SQUARE;
 int wavePin = 7;
 
-//#define TX_RX (4)          // mute + (+12V) relay - antenna switch relay TX/RX, and +V in TX for PA - RF Amplifier (2 sided 2 possition relay)
+#define CW_TIMEOUT (600l) // in milliseconds, this is the parameter that determines how long the tx will hold between cw key downs
+unsigned long cwTimeout = 0;     //keyer var - dead operator control
+#define TX_RX (4)          // mute + (+12V) relay - antenna switch relay TX/RX, and +V in TX for PA - RF Amplifier (2 sided 2 possition relay)
+#define CW_KEY (6)   // KEY output pin - in Q7 transistor colector (+5V when keyer down for RF signal modulation) (in Minima to enable sidetone generator on)
 #define FBUTTON (A0)       // tuning step freq CHANGE from 1Hz to 1MHz step for single rotary encoder possition
-//#define ANALOG_KEYER (A1)  // KEYER input - for analog straight key
+#define ANALOG_KEYER (A1)  // KEYER input - for analog straight key
 #define BTNDEC (A2)        // BAND CHANGE BUTTON from 1,8 to 29 MHz - 11 bands
 char inTx = 0;     // trx in transmit mode temp var
 char keyDown = 1;   // keyer down temp vat
 
 const int FSYNC = 10;                       // Standard SPI pins for the AD9833 waveform generator.
-const int CLK = 12;                         // CLK and DATA pins are shared with the TFT display.
+const int CLK = 13;                         // CLK and DATA pins are shared with the TFT display.
 const int DATA = 11;
 const float refFreq = 25000000.0;           // On-board crystal reference frequency
 
@@ -54,17 +57,15 @@ Rotary r = Rotary(3,2); // sets the pins for rotary encoder uses.  Must be inter
 //unsigned long xit=1200; // RIT +600 Hz
 unsigned long rx=7000000; // Starting frequency of VFO
 unsigned long rx2=1; // temp variable to hold the updated frequency
-//unsigned long rxof=800; //800
-//unsigned long freqIF=6000000;
+unsigned long rxof=800; //800
+unsigned long freqIF=0;
 //unsigned long rxif=(freqIF-rxof); // IF freq, will be summed with vfo freq - rx variable, my xtal filter now is made from 6 MHz xtals
 unsigned long rxRIT=0;
 int RITon=0;
-unsigned long increment = 100; // starting VFO update increment in HZ. tuning step
+unsigned long increment = 50; // starting VFO update increment in HZ. tuning step
 int buttonstate = 0;   // temp var
-String hertz = "100Hz";
+String hertz = "50Hz";
 int  hertzPosition = 0;
-int byteRead = 0;    // for serial comunication
-int var_i = 0;
 
 //byte ones,tens,hundreds,thousands,tenthousands,hundredthousands,millions ;  //Placeholders
 String freq; // string to hold the frequency
@@ -79,6 +80,12 @@ void setup() {
 
 //set up the pins in/out and logic levels
 
+pinMode(TX_RX, OUTPUT);
+digitalWrite(TX_RX, LOW);  
+
+pinMode(CW_KEY, OUTPUT);
+digitalWrite(CW_KEY, LOW);
+
 pinMode(BTNDEC,INPUT);    // band change button
 digitalWrite(BTNDEC,HIGH);    // level
 
@@ -92,12 +99,11 @@ Serial.begin(115200);
 SPI.begin();
 delay(50); 
 
-  Serial.println("*Initialize AD9833\n");
   AD9833reset();                                   // Reset AD9833 module after power-up.
   delay(50);
-  AD9833setFrequency(rx, SINE);                  // Set the frequency and Sine Wave output
+  AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);                  // Set the frequency and Sine Wave output
   
-  Serial.println("Start VFO ver 20.0");
+  //  Serial.println("Start VFO ver 11.0");
 
   // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C address 0x3C (for oled 128x32)
@@ -105,6 +111,8 @@ delay(50);
   // Show image buffer on the display hardware.
   // Since the buffer is intialized with an Adafruit splashscreen
   // internally, this will display the splashscreen.
+  display.display();
+
   // Clear the buffer.
   display.clearDisplay();	
 	display.setTextSize(2);
@@ -123,7 +131,7 @@ delay(50);
   PCMSK2 |= (1 << PCINT18) | (1 << PCINT19);
   sei();
   
-    AD9833setFrequency(rx, SINE);     // Set AD9833 to frequency and selected wave type.
+    AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
     delay(50);
 }
 
@@ -131,11 +139,12 @@ delay(50);
 
 void loop() {
 	checkBTNdecode();  // BAND change
+	checkCW();   		// when pres keyer
 	
 // freq change 
   if ((rx != rx2) || (RITon == 1)){
-	    showFreq();
-      AD9833setFrequency(rx, SINE);     // Set AD9833 to frequency and selected wave type.
+	  showFreq();
+      AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
       rx2 = rx;
       }
 
@@ -144,68 +153,7 @@ void loop() {
   if(buttonstate == LOW) {
         setincrement();        
     };
-//=============================================================	
 
-///	  SERIAL COMMUNICATION - remote computer control for DDS - 1, 2, 3, 4, 5, 6 - worked 
-   /*  check if data has been sent from the computer: */
-if (Serial.available()) {
-    /* read the most recent byte */
-    byteRead = Serial.read();
-	if(byteRead == 49){     // 1 - up freq
-		rx = rx + increment;
-		AD9833setFrequency(rx, SINE);
-    Serial.println(rx);
-		}
-	if(byteRead == 50){		// 2 - down freq
-		rx = rx - increment;
-		AD9833setFrequency(rx, SINE);
-    Serial.println(rx);
-		}
-	if(byteRead == 51){		// 3 - up increment
-		setincrement();
-    Serial.println(increment);
-		}
-	if(byteRead == 52){		// 4 - print VFO state in serial console
-		Serial.println("VFO_VERSION 14.0");
-		Serial.println(rx);
-//		Serial.println(rxbfo);
-		Serial.println(increment);
-		Serial.println(hertz);
-		}
-  if(byteRead == 53){		// 5 - scan freq forvard 40kHz 
-             var_i=0;           
-             while(var_i<=40000){
-                var_i++;
-                rx = rx + 10;
-                AD9833setFrequency(rx, SINE);
-                Serial.println(rx);
-//                showFreq();
-                if (Serial.available()) {
-					if(byteRead == 53){
-					    break;						           
-					}
-				}
-             }        
-   }
-
-   if(byteRead == 54){   // 6 - scan freq back 40kHz  
-             var_i=0;           
-             while(var_i<=40000){
-                var_i++;
-                rx = rx - 10;
-                AD9833setFrequency(rx, SINE);
-                Serial.println(rx);
-//                showFreq();
-                if (Serial.available()) {
-                    if(byteRead == 54){
-                        break;                       
-                    }
-                }
-             }        
-   }  
- }
-	
-//===============================================================	
 }	  
 /// END of main loop ///
 /// ===================================================== END ============================================
@@ -251,6 +199,7 @@ void showFreq(){
 	display.setTextColor(WHITE);
 	display.setCursor(0,0);
 	display.println(rx);
+	Serial.println(rx);
 	display.setTextSize(1);
 	display.setCursor(0,16);
 	display.print("St:");display.print(hertz);
@@ -350,6 +299,52 @@ BTNdecodeON = digitalRead(BTNDEC);
         }         
         delay(150);     
     }
+}
+
+///////////////////////
+/*CW is generated by keying the bias of a side-tone oscillator.
+nonzero cwTimeout denotes that we are in cw transmit mode.
+*/
+
+void checkCW(){
+  pinMode(TX_RX, OUTPUT);
+  if (keyDown == 0 && analogRead(ANALOG_KEYER) < 50){
+    //switch to transmit mode if we are not already in it
+    if (inTx == 0){
+      //put the TX_RX line to transmit
+      digitalWrite(TX_RX, 1);
+      AD9833setFrequency((rx-rxof), SQUARE);     // Set AD9833 to frequency and selected wave type.
+    }
+    inTx = 1;
+    keyDown = 1;
+    digitalWrite(CW_KEY, 1); //start the side-tone
+  }
+
+  //reset the timer as long as the key is down
+  if (keyDown == 1){
+    AD9833setFrequency((rx-rxof), SQUARE);     // Set AD9833 to frequency and selected wave type.
+    cwTimeout = CW_TIMEOUT + millis();
+  }
+
+  //if we have a keyup
+  if (keyDown == 1 && analogRead(ANALOG_KEYER) > 150){
+     keyDown = 0;
+     inTx = 0; 
+     digitalWrite(CW_KEY, 0);  // stop the side-tone
+     digitalWrite(TX_RX, 0);
+	 AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
+     cwTimeout = millis() + CW_TIMEOUT;
+  }
+
+  //if we have keyuup for a longish time while in cw rx mode
+  if (inTx == 1 && cwTimeout < millis()){
+     //move the radio back to receive
+	digitalWrite(CW_KEY, 0);
+    digitalWrite(TX_RX, 0);
+	AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
+    inTx = 0;
+    cwTimeout = 0;
+  }
 }
 
 //// OK END OF PROGRAM

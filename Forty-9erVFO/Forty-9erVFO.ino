@@ -1,18 +1,9 @@
 /*
-Revision 1.0 - Main code by Richard Visokey AD7C - www.ad7c.com
-Revision 2.0 - November 6th, 2013...  ever so slight revision by  VK8BN for AD9851 chip Feb 24 2014
-Revision 3.0 - April, 2016 - AD9851 + ARDUINO PRO NANO + integrate cw decoder (by LZ1DPN) (uncontinued version)
-Revision 4.0 - May 31, 2016  - deintegrate cw decoder and add button for band change (by LZ1DPN)
-Revision 5.0 - July 20, 2016  - change LCD with OLED display + IF --> ready to control transceiver RFT SEG-100 (by LZ1DPN)
-Revision 6.0 - August 16, 2016  - serial control buttons from computer with USB serial (by LZ1DPN) (1 up freq, 2 down freq, 3 step increment change, 4 print state)
-									for no_display work with DDS generator
-Revision 7.0 - November 30, 2016  - added some things from Ashhar Farhan's Minima TRX sketch to control transceiver, keyer, relays and other ... (LZ1DPN mod)								
-Revision 8.0 - December 12, 2016  - EK1A trx end revision. Setup last hardware changes ... (LZ1DPN mod)
-Revision 9.0 - January 07, 2017  - EK1A trx last revision. Remove not worked bands ... trx work well on 3.5, 5, 7, 10, 14 MHz (LZ1DPN mod)
-Revision 10.0 - March 13, 2017 	 - scan function
-Revision 11.0 - October 22, 2017 	 - RIT + other - other
-Revision 12.0 - January 22, 2018  - support AD9833 oscillator (VFO for NorCal NC40a/2018) (49-er/2018)
+Revision 3.0 - May 12, 2019  - support AD9833 oscillator (VFO for Forty-9er)
+band is 40m only (7 MHz), band change is stopped, RIT doesn't have meaning in DC transceiver,
+if need - uncomment all functionality you need
 
+NO WARRANTY !
 This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
 without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 See the GNU General Public License for more details.
@@ -38,10 +29,11 @@ int wavePin = 7;
 
 #define CW_TIMEOUT (600l) // in milliseconds, this is the parameter that determines how long the tx will hold between cw key downs
 unsigned long cwTimeout = 0;     //keyer var - dead operator control
-#define TX_RX (4)          // mute + (+12V) relay - antenna switch relay TX/RX, and +V in TX for PA - RF Amplifier (2 sided 2 possition relay)
+//#define TX_RX (4)          // mute + (+12V) relay - antenna switch relay TX/RX, and +V in TX for PA - RF Amplifier (2 sided 2 possition relay)
 #define CW_KEY (6)   // KEY output pin - in Q7 transistor colector (+5V when keyer down for RF signal modulation) (in Minima to enable sidetone generator on)
 #define FBUTTON (A0)       // tuning step freq CHANGE from 1Hz to 1MHz step for single rotary encoder possition
-#define ANALOG_KEYER (A1)  // KEYER input - for analog straight key
+//#define ANALOG_KEYER (A1)  // KEYER input - for analog straight key - like Farhan's minima style.
+#define DIG_KEYER (A1)      // digital straight key input
 #define BTNDEC (A2)        // BAND CHANGE BUTTON from 1,8 to 29 MHz - 11 bands
 char inTx = 0;     // trx in transmit mode temp var
 char keyDown = 1;   // keyer down temp vat
@@ -54,13 +46,11 @@ const float refFreq = 25000000.0;           // On-board crystal reference freque
 #define pulseHigh(pin) {digitalWrite(pin, HIGH); digitalWrite(pin, LOW); }
 Rotary r = Rotary(3,2); // sets the pins for rotary encoder uses.  Must be interrupt pins.
   
-//unsigned long xit=1200; // RIT +600 Hz
 unsigned long rx=7000000; // Starting frequency of VFO
 unsigned long rx2=1; // temp variable to hold the updated frequency
-unsigned long rxof=800; //800
-unsigned long freqIF=0;
-//unsigned long rxif=(freqIF-rxof); // IF freq, will be summed with vfo freq - rx variable, my xtal filter now is made from 6 MHz xtals
-unsigned long rxRIT=0;
+unsigned long rxof=0; //800
+
+int rxRIT=0;
 int RITon=0;
 unsigned long increment = 50; // starting VFO update increment in HZ. tuning step
 int buttonstate = 0;   // temp var
@@ -71,8 +61,9 @@ int  hertzPosition = 0;
 String freq; // string to hold the frequency
 
 // buttons temp var
-int BTNdecodeON = 0;   
-int BTNinc = 3; // set number of default band minus 1
+int BTNdecodeON = 0;
+int keyerON = 0;   
+int BTNinc = 4; // set number of default band minus 1
 
 // start variable setup
 
@@ -80,11 +71,11 @@ void setup() {
 
 //set up the pins in/out and logic levels
 
-pinMode(TX_RX, OUTPUT);
-digitalWrite(TX_RX, LOW);  
-
 pinMode(CW_KEY, OUTPUT);
 digitalWrite(CW_KEY, LOW);
+
+pinMode(DIG_KEYER,INPUT);
+digitalWrite(DIG_KEYER,LOW);
 
 pinMode(BTNDEC,INPUT);    // band change button
 digitalWrite(BTNDEC,HIGH);    // level
@@ -101,9 +92,7 @@ delay(50);
 
   AD9833reset();                                   // Reset AD9833 module after power-up.
   delay(50);
-  AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);                  // Set the frequency and Sine Wave output
-  
-  //  Serial.println("Start VFO ver 11.0");
+  AD9833setFrequency((rx+rxRIT-rxof), SQUARE);                  // Set the frequency and Sine Wave output
 
   // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C address 0x3C (for oled 128x32)
@@ -115,36 +104,36 @@ delay(50);
 
   // Clear the buffer.
   display.clearDisplay();	
-	display.setTextSize(2);
-	display.setTextColor(WHITE);
-	display.setCursor(0,0);
-	display.println(rx);
-	display.setTextSize(1);
-	display.setCursor(0,16);
-	display.print("St:");display.print(hertz);
-	display.setCursor(64,16);
-	display.print("rit:");display.print(rxRIT);
-	display.display();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(0,0);
+  display.println(rx);
+  display.setTextSize(1);
+  display.setCursor(0,16);
+  display.print("St:");display.print(hertz);
+  display.setCursor(64,16);
+  display.print("rit:");display.print(rxRIT);
+  display.display();
   
    //  rotary
   PCICR |= (1 << PCIE2);
   PCMSK2 |= (1 << PCINT18) | (1 << PCINT19);
   sei();
   
-    AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
+    AD9833setFrequency((rx+rxRIT-rxof), SQUARE);     // Set AD9833 to frequency and selected wave type.
     delay(50);
 }
 
 ///// START LOOP - MAIN LOOP
 
 void loop() {
-	checkBTNdecode();  // BAND change
+//	checkBTNdecode();  // BAND change
 //	checkCW();   		// when pres keyer
 	
 // freq change 
   if ((rx != rx2) || (RITon == 1)){
 	  showFreq();
-      AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
+      AD9833setFrequency((rx+rxRIT-rxof), SQUARE);     // Set AD9833 to frequency and selected wave type.
       rx2 = rx;
       }
 
@@ -231,7 +220,6 @@ void AD9833setFrequency(long frequency, int Waveform) {
   WriteRegister(MSB);                  // Write upper 16 bits to AD9833 registers.
   WriteRegister(0xC000);               // Phase register
   WriteRegister(Waveform);             // Exit & Reset to SINE, SQUARE or TRIANGLE
-
 }
 
 void WriteRegister(int dat) { 
@@ -297,7 +285,7 @@ BTNdecodeON = digitalRead(BTNDEC);
           default:             
             break;
         }         
-        delay(150);     
+        delay(250);     
     }
 }
 
@@ -307,17 +295,16 @@ nonzero cwTimeout denotes that we are in cw transmit mode.
 */
 
 void checkCW(){
-  pinMode(TX_RX, OUTPUT);
-  if (keyDown == 0 && analogRead(ANALOG_KEYER) < 50){
+  keyerON = digitalRead(DIG_KEYER);
+  if ((keyDown == 0) && (keyerON == HIGH)) {
     //switch to transmit mode if we are not already in it
     if (inTx == 0){
       //put the TX_RX line to transmit
-      digitalWrite(TX_RX, 1);
       AD9833setFrequency((rx-rxof), SQUARE);     // Set AD9833 to frequency and selected wave type.
     }
     inTx = 1;
     keyDown = 1;
-    digitalWrite(CW_KEY, 1); //start the side-tone
+    digitalWrite(CW_KEY, HIGH); //start the side-tone
   }
 
   //reset the timer as long as the key is down
@@ -327,23 +314,21 @@ void checkCW(){
   }
 
   //if we have a keyup
-  if (keyDown == 1 && analogRead(ANALOG_KEYER) > 150){
+  if ((keyDown == 1) && (keyerON == LOW)){
      keyDown = 0;
      inTx = 0; 
-     digitalWrite(CW_KEY, 0);  // stop the side-tone
-     digitalWrite(TX_RX, 0);
-	 AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
+     digitalWrite(CW_KEY, LOW);  // stop the side-tone
+	 AD9833setFrequency((rx+rxRIT-rxof), SQUARE);     // Set AD9833 to frequency and selected wave type.
      cwTimeout = millis() + CW_TIMEOUT;
   }
 
   //if we have keyuup for a longish time while in cw rx mode
-  if (inTx == 1 && cwTimeout < millis()){
+  if ((inTx == 1) && (cwTimeout < millis())){
      //move the radio back to receive
-	digitalWrite(CW_KEY, 0);
-    digitalWrite(TX_RX, 0);
-	AD9833setFrequency((rx+freqIF+rxRIT), SQUARE);     // Set AD9833 to frequency and selected wave type.
-    inTx = 0;
-    cwTimeout = 0;
+	  digitalWrite(CW_KEY, LOW);
+	  AD9833setFrequency((rx+rxRIT-rxof), SQUARE);     // Set AD9833 to frequency and selected wave type.
+      inTx = 0;
+      cwTimeout = 0;
   }
 }
 
